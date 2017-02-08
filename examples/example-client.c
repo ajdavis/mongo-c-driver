@@ -32,27 +32,35 @@ mongo_TransportLayerInProcConnectionPoll (mongoc_stream_poll_t *streams,
 
 
 ssize_t
-mongo_TransportLayerInProcConnectionSend (void *connection,
-                                          const void *buffer,
-                                          size_t bufferLen,
-                                          int32_t timeout)
+mongo_TransportLayerInProcConnectionWriteV (void *connection,
+                                            mongoc_iovec_t *iov,
+                                            size_t iovcnt,
+                                            int32_t timeout)
 {
-   return mongoc_stream_write (
-      (mongoc_stream_t *) connection, (void *) buffer, bufferLen, timeout);
+   return mongoc_stream_writev (
+      (mongoc_stream_t *) connection, iov, iovcnt, timeout);
 }
 
 
 ssize_t
-mongo_TransportLayerInProcConnectionRecv (void *connection,
-                                          void *buffer,
-                                          size_t bufferLen,
-                                          int32_t timeout)
+mongo_TransportLayerInProcConnectionReadV (void *connection,
+                                           mongoc_iovec_t *iov,
+                                           size_t iovcnt,
+                                           int32_t timeout)
 {
-   return mongoc_stream_read ((mongoc_stream_t *) connection,
-                              buffer,
-                              bufferLen /* buf size */,
-                              bufferLen /* min bytes */,
-                              timeout);
+   size_t i;
+   size_t buf_len;
+
+   buf_len = 0;
+   for (i = 0; i < iovcnt; i++) {
+      buf_len += iov[i].iov_len;
+   }
+
+   return mongoc_stream_readv ((mongoc_stream_t *) connection,
+                               iov,
+                               iovcnt,
+                               buf_len /* min bytes */,
+                               timeout);
 }
 
 
@@ -114,32 +122,8 @@ _mongoc_stream_inproc_readv (mongoc_stream_t *stream,
                              size_t min_bytes,
                              int32_t timeout_msec)
 {
-   size_t i;
-   void *buf;
-   void *buf_ptr;
-   size_t buf_len;
-   ssize_t ret;
-
-   buf_len = 0;
-   for (i = 0; i < iovcnt; i++) {
-      buf_len += iov[i].iov_len;
-   }
-
-   buf = bson_malloc (buf_len);
-   assert (buf);
-
-   ret = mongo_TransportLayerInProcConnectionRecv (
-      ((mongoc_stream_inproc_t *) stream)->wrapped, buf, buf_len, timeout_msec);
-
-   buf_ptr = buf;
-   for (i = 0; i < iovcnt; i++) {
-      memcpy (iov[i].iov_base, buf_ptr, iov[i].iov_len);
-      buf_ptr += iov[i].iov_len;
-   }
-
-   bson_free (buf);
-
-   return ret;
+   return mongo_TransportLayerInProcConnectionReadV (
+      ((mongoc_stream_inproc_t *) stream)->wrapped, iov, iovcnt, timeout_msec);
 }
 
 
@@ -149,32 +133,8 @@ _mongoc_stream_inproc_writev (mongoc_stream_t *stream,
                               size_t iovcnt,
                               int32_t timeout_msec)
 {
-   size_t i;
-   void *buf;
-   void *buf_ptr;
-   size_t buf_len;
-   ssize_t ret;
-
-   buf_len = 0;
-   for (i = 0; i < iovcnt; i++) {
-      buf_len += iov[i].iov_len;
-   }
-
-   buf = bson_malloc (buf_len);
-   assert (buf);
-
-   buf_ptr = buf;
-   for (i = 0; i < iovcnt; i++) {
-      memcpy (buf_ptr, iov[i].iov_base, iov[i].iov_len);
-      buf_ptr += iov[i].iov_len;
-   }
-
-   ret = mongo_TransportLayerInProcConnectionSend (
-      ((mongoc_stream_inproc_t *) stream)->wrapped, buf, buf_len, timeout_msec);
-
-   bson_free (buf);
-
-   return ret;
+   return mongo_TransportLayerInProcConnectionWriteV (
+      ((mongoc_stream_inproc_t *) stream)->wrapped, iov, iovcnt, timeout_msec);
 }
 
 
