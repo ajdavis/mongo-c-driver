@@ -99,7 +99,7 @@ _mongoc_stream_inproc_poll (mongoc_stream_poll_t *streams,
    mongoc_stream_poll_t default_poller;
    ssize_t ret;
 
-   default_poller.stream = default_stream;
+   default_poller.stream = (((mongoc_stream_inproc_t *) streams->stream)->wrapped);
    default_poller.events = streams->events;
    default_poller.revents = 0;
 
