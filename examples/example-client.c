@@ -24,29 +24,26 @@ mongo_TransportLayerInProcConnectionConnect (const char *addr)
 
 ssize_t
 mongo_TransportLayerInProcConnectionPoll (mongoc_stream_poll_t *streams,
-                                          size_t nstreams,
-                                          int32_t timeout)
+                                          size_t nstreams)
 {
-   return mongoc_stream_poll (streams, nstreams, timeout);
+   return mongoc_stream_poll (streams, nstreams, -1);
 }
 
 
 ssize_t
 mongo_TransportLayerInProcConnectionWriteV (void *connection,
                                             mongoc_iovec_t *iov,
-                                            size_t iovcnt,
-                                            int32_t timeout)
+                                            size_t iovcnt)
 {
    return mongoc_stream_writev (
-      (mongoc_stream_t *) connection, iov, iovcnt, timeout);
+      (mongoc_stream_t *) connection, iov, iovcnt, -1);
 }
 
 
 ssize_t
 mongo_TransportLayerInProcConnectionReadV (void *connection,
                                            mongoc_iovec_t *iov,
-                                           size_t iovcnt,
-                                           int32_t timeout)
+                                           size_t iovcnt)
 {
    size_t i;
    size_t buf_len;
@@ -56,11 +53,8 @@ mongo_TransportLayerInProcConnectionReadV (void *connection,
       buf_len += iov[i].iov_len;
    }
 
-   return mongoc_stream_readv ((mongoc_stream_t *) connection,
-                               iov,
-                               iovcnt,
-                               buf_len /* min bytes */,
-                               timeout);
+   return mongoc_stream_readv (
+      (mongoc_stream_t *) connection, iov, iovcnt, buf_len /* min bytes */, -1);
 }
 
 
@@ -108,7 +102,7 @@ _mongoc_stream_inproc_poll (mongoc_stream_poll_t *streams,
    default_poller.events = streams->events;
    default_poller.revents = 0;
 
-   ret = mongo_TransportLayerInProcConnectionPoll (&default_poller, 1, timeout);
+   ret = mongo_TransportLayerInProcConnectionPoll (&default_poller, 1);
    streams->revents = default_poller.revents;
 
    return ret;
@@ -123,7 +117,7 @@ _mongoc_stream_inproc_readv (mongoc_stream_t *stream,
                              int32_t timeout_msec)
 {
    return mongo_TransportLayerInProcConnectionReadV (
-      ((mongoc_stream_inproc_t *) stream)->wrapped, iov, iovcnt, timeout_msec);
+      ((mongoc_stream_inproc_t *) stream)->wrapped, iov, iovcnt);
 }
 
 
@@ -134,7 +128,7 @@ _mongoc_stream_inproc_writev (mongoc_stream_t *stream,
                               int32_t timeout_msec)
 {
    return mongo_TransportLayerInProcConnectionWriteV (
-      ((mongoc_stream_inproc_t *) stream)->wrapped, iov, iovcnt, timeout_msec);
+      ((mongoc_stream_inproc_t *) stream)->wrapped, iov, iovcnt);
 }
 
 
