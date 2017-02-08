@@ -4,8 +4,6 @@
 /* ./example-client [CONNECTION_STRING [COLLECTION_NAME]] */
 
 #include <mongoc.h>
-#include <stdio.h>
-#include <stdlib.h>
 
 #define MONGOC_COMPILATION
 #include <mongoc-client-private.h>
@@ -16,82 +14,96 @@ static mongoc_stream_t *default_stream;
 
 
 void *
-mongo_TransportLayerInProcConnectionConnect (const char *addr);
+mongo_TransportLayerInProcConnectionConnect (const char *addr)
+{
+   assert (default_stream);
+
+   return default_stream;
+}
+
+
+ssize_t
+mongo_TransportLayerInProcConnectionPoll (mongoc_stream_poll_t *streams,
+                                          size_t nstreams,
+                                          int32_t timeout)
+{
+   return mongoc_stream_poll (streams, nstreams, timeout);
+}
+
 
 ssize_t
 mongo_TransportLayerInProcConnectionSend (void *connection,
                                           const void *buffer,
                                           size_t bufferLen,
-                                          int32_t timeout);
+                                          int32_t timeout)
+{
+   return mongoc_stream_write (
+      (mongoc_stream_t *) connection, (void *) buffer, bufferLen, timeout);
+}
+
+
 ssize_t
 mongo_TransportLayerInProcConnectionRecv (void *connection,
                                           void *buffer,
                                           size_t bufferLen,
-                                          int32_t timeout);
+                                          int32_t timeout)
+{
+   return mongoc_stream_read ((mongoc_stream_t *) connection,
+                              buffer,
+                              bufferLen /* buf size */,
+                              bufferLen /* min bytes */,
+                              timeout);
+}
+
 
 void
-mongo_TransportLayerInProcConnectionClose (void *connection);
-
-
-typedef struct _mongoc_stream_inproc_data_t {
-   mongoc_client_t *client;
-} mongoc_stream_inproc_data_t;
+mongo_TransportLayerInProcConnectionClose (void *connection)
+{
+   if (mongoc_stream_close ((mongoc_stream_t *) connection) < 0) {
+      MONGOC_ERROR ("closing default stream\n");
+   }
+}
 
 
 typedef struct _mongoc_stream_inproc_t {
    mongoc_stream_t vtable;
    mongoc_stream_t *wrapped;
-   mongoc_stream_inproc_data_t *data;
 } mongoc_stream_inproc_t;
 
 
 static int
 _mongoc_stream_inproc_close (mongoc_stream_t *stream)
 {
-   return mongoc_stream_close (((mongoc_stream_inproc_t *) stream)->wrapped);
+   mongo_TransportLayerInProcConnectionClose (
+      ((mongoc_stream_inproc_t *) stream)->wrapped);
+
+   return 0;
 }
 
 
 static void
 _mongoc_stream_inproc_destroy (mongoc_stream_t *stream)
 {
-   mongoc_stream_inproc_t *debug_stream = (mongoc_stream_inproc_t *) stream;
-
-   mongoc_stream_destroy (debug_stream->wrapped);
-   bson_free (debug_stream);
+   /* nothing */
 }
 
 
-static void
-_mongoc_stream_inproc_failed (mongoc_stream_t *stream)
+static ssize_t
+_mongoc_stream_inproc_poll (mongoc_stream_poll_t *streams,
+                            size_t nstreams,
+                            int32_t timeout)
 {
-   mongoc_stream_inproc_t *debug_stream = (mongoc_stream_inproc_t *) stream;
+   mongoc_stream_poll_t default_poller;
+   ssize_t ret;
 
-   mongoc_stream_failed (debug_stream->wrapped);
-   bson_free (debug_stream);
-}
+   default_poller.stream = default_stream;
+   default_poller.events = streams->events;
+   default_poller.revents = 0;
 
+   ret = mongo_TransportLayerInProcConnectionPoll (&default_poller, 1, timeout);
+   streams->revents = default_poller.revents;
 
-static int
-_mongoc_stream_inproc_setsockopt (mongoc_stream_t *stream,
-                                  int level,
-                                  int optname,
-                                  void *optval,
-                                  mongoc_socklen_t optlen)
-{
-   return mongoc_stream_setsockopt (
-      ((mongoc_stream_inproc_t *) stream)->wrapped,
-      level,
-      optname,
-      optval,
-      optlen);
-}
-
-
-static int
-_mongoc_stream_inproc_flush (mongoc_stream_t *stream)
-{
-   return mongoc_stream_flush (((mongoc_stream_inproc_t *) stream)->wrapped);
+   return ret;
 }
 
 
@@ -102,11 +114,32 @@ _mongoc_stream_inproc_readv (mongoc_stream_t *stream,
                              size_t min_bytes,
                              int32_t timeout_msec)
 {
-   return mongoc_stream_readv (((mongoc_stream_inproc_t *) stream)->wrapped,
-                               iov,
-                               iovcnt,
-                               min_bytes,
-                               timeout_msec);
+   size_t i;
+   void *buf;
+   void *buf_ptr;
+   size_t buf_len;
+   ssize_t ret;
+
+   buf_len = 0;
+   for (i = 0; i < iovcnt; i++) {
+      buf_len += iov[i].iov_len;
+   }
+
+   buf = bson_malloc (buf_len);
+   assert (buf);
+
+   ret = mongo_TransportLayerInProcConnectionRecv (
+      ((mongoc_stream_inproc_t *) stream)->wrapped, buf, buf_len, timeout_msec);
+
+   buf_ptr = buf;
+   for (i = 0; i < iovcnt; i++) {
+      memcpy (iov[i].iov_base, buf_ptr, iov[i].iov_len);
+      buf_ptr += iov[i].iov_len;
+   }
+
+   bson_free (buf);
+
+   return ret;
 }
 
 
@@ -116,58 +149,32 @@ _mongoc_stream_inproc_writev (mongoc_stream_t *stream,
                               size_t iovcnt,
                               int32_t timeout_msec)
 {
-   return mongoc_stream_writev (
-      ((mongoc_stream_inproc_t *) stream)->wrapped, iov, iovcnt, timeout_msec);
-}
+   size_t i;
+   void *buf;
+   void *buf_ptr;
+   size_t buf_len;
+   ssize_t ret;
 
-
-static bool
-_mongoc_stream_inproc_check_closed (mongoc_stream_t *stream)
-{
-   return mongoc_stream_check_closed (
-      ((mongoc_stream_inproc_t *) stream)->wrapped);
-}
-
-
-static mongoc_stream_t *
-_mongoc_stream_inproc_get_base_stream (mongoc_stream_t *stream)
-{
-   mongoc_stream_t *wrapped = ((mongoc_stream_inproc_t *) stream)->wrapped;
-
-   /* "wrapped" is typically a mongoc_stream_buffered_t, get the real
-    * base stream */
-   if (wrapped->get_base_stream) {
-      return wrapped->get_base_stream (wrapped);
+   buf_len = 0;
+   for (i = 0; i < iovcnt; i++) {
+      buf_len += iov[i].iov_len;
    }
 
-   return wrapped;
-}
+   buf = bson_malloc (buf_len);
+   assert (buf);
 
+   buf_ptr = buf;
+   for (i = 0; i < iovcnt; i++) {
+      memcpy (buf_ptr, iov[i].iov_base, iov[i].iov_len);
+      buf_ptr += iov[i].iov_len;
+   }
 
-mongoc_stream_t *
-inproc_stream_new (mongoc_stream_inproc_data_t *data)
-{
-   mongoc_stream_inproc_t *s;
+   ret = mongo_TransportLayerInProcConnectionSend (
+      ((mongoc_stream_inproc_t *) stream)->wrapped, buf, buf_len, timeout_msec);
 
-   assert (default_stream);
+   bson_free (buf);
 
-   s = (mongoc_stream_inproc_t *) bson_malloc0 (sizeof *s);
-
-   s->vtable.type = MONGOC_STREAM_INPROC;
-   s->vtable.close = _mongoc_stream_inproc_close;
-   s->vtable.destroy = _mongoc_stream_inproc_destroy;
-   s->vtable.failed = _mongoc_stream_inproc_failed;
-   s->vtable.flush = _mongoc_stream_inproc_flush;
-   s->vtable.readv = _mongoc_stream_inproc_readv;
-   s->vtable.writev = _mongoc_stream_inproc_writev;
-   s->vtable.setsockopt = _mongoc_stream_inproc_setsockopt;
-   s->vtable.check_closed = _mongoc_stream_inproc_check_closed;
-   s->vtable.get_base_stream = _mongoc_stream_inproc_get_base_stream;
-
-   s->wrapped = default_stream;
-   s->data = data;
-
-   return (mongoc_stream_t *) s;
+   return ret;
 }
 
 
@@ -177,11 +184,28 @@ inproc_stream_initiator (const mongoc_uri_t *uri,
                          void *user_data,
                          bson_error_t *error)
 {
-   mongoc_stream_inproc_data_t *data;
+   mongoc_stream_t *wrapped;
+   mongoc_stream_inproc_t *s;
 
-   data = (mongoc_stream_inproc_data_t *) user_data;
+   wrapped = mongo_TransportLayerInProcConnectionConnect (host->host_and_port);
+   if (!wrapped) {
+      return NULL;
+   }
 
-   return inproc_stream_new (data);
+   s = (mongoc_stream_inproc_t *) bson_malloc0 (sizeof *s);
+
+   s->vtable.type = MONGOC_STREAM_INPROC;
+   s->vtable.poll = _mongoc_stream_inproc_poll;
+   s->vtable.close = _mongoc_stream_inproc_close;
+   s->vtable.readv = _mongoc_stream_inproc_readv;
+   s->vtable.writev = _mongoc_stream_inproc_writev;
+
+   /* driver requires the destructor to be non-null */
+   s->vtable.destroy = _mongoc_stream_inproc_destroy;
+
+   s->wrapped = wrapped;
+
+   return (mongoc_stream_t *) s;
 }
 
 
@@ -189,7 +213,6 @@ int
 main (int argc, char *argv[])
 {
    mongoc_client_t *client;
-   mongoc_stream_inproc_data_t data;
    mongoc_collection_t *collection;
    mongoc_cursor_t *cursor;
    bson_error_t error;
@@ -207,20 +230,20 @@ main (int argc, char *argv[])
 
    uri = mongoc_uri_new (uristr);
    if (!uri) {
-      fprintf (stderr, "Failed to parse URI\n");
+      MONGOC_ERROR ("Failed to parse URI\n");
       return EXIT_FAILURE;
    }
 
-   data.client = client = mongoc_client_new_from_uri (uri);
+   client = mongoc_client_new_from_uri (uri);
    default_stream = mongoc_client_default_stream_initiator (
       uri, mongoc_uri_get_hosts (uri), client, &error);
 
    if (!default_stream) {
-      fprintf (stderr, "Couldn't create stream: %s\n", error.message);
+      MONGOC_ERROR ("Couldn't create stream: %s\n", error.message);
       return EXIT_FAILURE;
    }
 
-   mongoc_client_set_stream_initiator (client, inproc_stream_initiator, &data);
+   mongoc_client_set_stream_initiator (client, inproc_stream_initiator, NULL);
 
    bson_init (&query);
    collection = mongoc_client_get_collection (client, "test", "test");
@@ -237,7 +260,7 @@ main (int argc, char *argv[])
    }
 
    if (mongoc_cursor_error (cursor, &error)) {
-      fprintf (stderr, "Cursor Failure: %s\n", error.message);
+      MONGOC_ERROR ("Cursor Failure: %s\n", error.message);
       return EXIT_FAILURE;
    }
 
@@ -245,6 +268,7 @@ main (int argc, char *argv[])
    mongoc_cursor_destroy (cursor);
    mongoc_collection_destroy (collection);
    mongoc_client_destroy (client);
+   mongoc_stream_destroy (default_stream);
    mongoc_uri_destroy (uri);
 
    mongoc_cleanup ();
