@@ -5,6 +5,7 @@
 
 #include <mongoc.h>
 
+/* for access to mongoc_client_default_stream_initiator */
 #define MONGOC_COMPILATION
 #include <mongoc-client-private.h>
 
